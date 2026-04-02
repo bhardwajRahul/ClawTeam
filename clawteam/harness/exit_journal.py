@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timezone
-from pathlib import Path
 
 from clawteam.harness.strategies import ExitNotifier
 from clawteam.team.models import get_data_dir

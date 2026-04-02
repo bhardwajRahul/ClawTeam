@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib
 import json
 import sys
-from pathlib import Path
 from typing import Any
 
 from clawteam.plugins.base import HarnessPlugin

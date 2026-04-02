@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from clawteam.harness.context import HarnessContext
@@ -124,8 +124,8 @@ class ContextRecovery:
     def _teammate_summary(self, agent_name: str, team_name: str, role: str) -> str:
         """Layer 5: One-liner teammate summaries."""
         try:
-            from clawteam.team.tasks import TaskStore
             from clawteam.team.models import TaskStatus
+            from clawteam.team.tasks import TaskStore
             store = TaskStore(team_name)
             tasks = store.list_tasks()
 

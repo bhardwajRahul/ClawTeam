@@ -52,10 +52,10 @@ class PhaseRoleSpawner(SpawnStrategy):
 
             # Use the existing spawn infrastructure
             try:
-                from clawteam.spawn import get_backend
-                from clawteam.harness.prompts import build_harness_system_prompt
-                from clawteam.team.manager import TeamManager
                 from clawteam.config import load_config
+                from clawteam.harness.prompts import build_harness_system_prompt
+                from clawteam.spawn import get_backend
+                from clawteam.team.manager import TeamManager
 
                 cfg = load_config()
 
@@ -102,8 +102,8 @@ class PhaseRoleSpawner(SpawnStrategy):
     ) -> str:
         """Re-spawn an agent, optionally resuming its session."""
         try:
-            from clawteam.spawn import get_backend
             from clawteam.config import load_config
+            from clawteam.spawn import get_backend
 
             cfg = load_config()
             agent_id = uuid.uuid4().hex[:12]

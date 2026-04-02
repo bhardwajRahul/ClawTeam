@@ -78,8 +78,8 @@ class AllTasksCompleteGate(PhaseGate):
     """Requires all team tasks to be completed."""
 
     def check(self, state: PhaseState) -> tuple[bool, str]:
-        from clawteam.team.tasks import TaskStore
         from clawteam.team.models import TaskStatus
+        from clawteam.team.tasks import TaskStore
         store = TaskStore(state.team_name)
         tasks = store.list_tasks()
         incomplete = [t for t in tasks if t.status != TaskStatus.completed]

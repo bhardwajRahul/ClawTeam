@@ -6,7 +6,6 @@ from clawteam.events.bus import EventBus
 from clawteam.events.types import (
     AfterWorkerSpawn,
     BeforeWorkerSpawn,
-    HarnessEvent,
     TaskCompleted,
     WorkerExit,
 )
@@ -32,7 +31,10 @@ class TestEventBus:
     def test_unsubscribe(self):
         bus = EventBus()
         calls = []
-        handler = lambda e: calls.append(1)
+
+        def handler(_event):
+            calls.append(1)
+
         bus.subscribe(WorkerExit, handler)
         bus.emit(WorkerExit(team_name="t"))
         assert len(calls) == 1

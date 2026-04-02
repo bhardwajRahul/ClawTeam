@@ -1,5 +1,6 @@
 """Harness system: plan-then-execute agent orchestration."""
 
+from clawteam.harness.contracts import SprintContract, SuccessCriterion
 from clawteam.harness.phases import (
     DISCUSS,
     EXECUTE,
@@ -13,7 +14,6 @@ from clawteam.harness.phases import (
     PhaseRunner,
     PhaseState,
 )
-from clawteam.harness.contracts import SprintContract, SuccessCriterion
 from clawteam.harness.roles import EVALUATOR, EXECUTOR, LEADER, PLANNER, RoleConfig
 from clawteam.harness.strategies import (
     AssignmentStrategy,

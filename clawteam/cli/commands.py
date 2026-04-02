@@ -4351,6 +4351,7 @@ def harness_approve(
 ) -> None:
     """Approve the current phase for advancement (human-in-the-loop gate)."""
     import json as _json
+
     from clawteam.harness.orchestrator import HarnessOrchestrator
 
     orch = HarnessOrchestrator.find_latest(team)
@@ -4447,7 +4448,6 @@ def run_command(
 
     # Optional workspace
     cwd = None
-    ws_branch = ""
     if workspace:
         try:
             from clawteam.workspace import get_workspace_manager
@@ -4455,7 +4455,6 @@ def run_command(
             if ws_mgr:
                 info = ws_mgr.create_workspace(team, agent_name)
                 cwd = info.worktree_path
-                ws_branch = info.branch_name
         except Exception:
             pass
 

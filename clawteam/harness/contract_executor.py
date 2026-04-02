@@ -54,8 +54,8 @@ class ContractExecutor:
 
     def create_tasks_from_contracts(self) -> list:
         """Convert contracts to TaskStore tasks with wave dependencies."""
-        from clawteam.team.tasks import TaskStore
         from clawteam.team.models import TaskPriority
+        from clawteam.team.tasks import TaskStore
 
         contracts = self.load_contracts()
         store = TaskStore(self._orch.team_name)
@@ -92,8 +92,8 @@ class ContractExecutor:
 
     def check_wave_completion(self, wave: int) -> bool:
         """Check if all tasks in a wave are completed."""
-        from clawteam.team.tasks import TaskStore
         from clawteam.team.models import TaskStatus
+        from clawteam.team.tasks import TaskStore
 
         store = TaskStore(self._orch.team_name)
         tasks = store.list_tasks()

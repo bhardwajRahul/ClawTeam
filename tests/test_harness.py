@@ -1,6 +1,5 @@
 """Tests for clawteam.harness — phases, artifacts, contracts, orchestrator."""
 
-import json
 
 from clawteam.harness.artifacts import ArtifactStore
 from clawteam.harness.contracts import SprintContract, SuccessCriterion
@@ -272,6 +271,7 @@ class TestStrategies:
 
     def test_event_type_registry(self):
         from dataclasses import dataclass
+
         from clawteam.events.bus import register_event_type, resolve_event_type
         from clawteam.events.types import HarnessEvent
 

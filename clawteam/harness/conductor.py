@@ -5,7 +5,6 @@ from __future__ import annotations
 import signal
 import sys
 import time
-from typing import Any
 
 from clawteam.harness.context import HarnessContext
 from clawteam.harness.exit_journal import FileExitJournal
