@@ -24,6 +24,8 @@ Standardize the local development environment with the bootstrap script:
 bash scripts/bootstrap_clawteam_dev.sh
 ```
 
+This script lives in `scripts/bootstrap_clawteam_dev.sh` inside this skill folder.
+
 This script does all of the following:
 
 - Creates a fixed uv environment at `~/.clawteam-venv`
@@ -49,6 +51,8 @@ this repository's local ClawTeam skills directly:
 ```bash
 bash scripts/link_local_clawteam_skills.sh /path/to/project
 ```
+
+This script lives in `scripts/link_local_clawteam_skills.sh` inside this skill folder.
 
 This creates these symlinks inside the target project:
 

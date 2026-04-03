@@ -2,7 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+SKILL_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+REPO_ROOT="$(cd -- "${SKILL_DIR}/../../.." && pwd)"
 TARGET_DIR="${1:-$PWD}"
 
 mkdir -p "${TARGET_DIR}/.agents/skills" "${TARGET_DIR}/.claude/skills"

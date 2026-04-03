@@ -2,10 +2,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+SKILL_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+REPO_ROOT="$(cd -- "${SKILL_DIR}/../../.." && pwd)"
 VENV_DIR="${HOME}/.clawteam-venv"
 LAUNCHER="${HOME}/.local/bin/clawteam"
-BASHRC="${HOME}/.bashrc"
 PYTHON_BIN="${VENV_DIR}/bin/python"
 
 mkdir -p "${HOME}/.local/bin"
@@ -33,9 +33,9 @@ from pathlib import Path
 bashrc = Path.home() / ".bashrc"
 launcher = Path.home() / ".clawteam-venv" / "bin" / "python"
 block = f"""# >>> clawteam launcher >>>
-clawteam() {
+clawteam() {{
   {launcher} -m clawteam.cli.commands "$@"
-}
+}}
 # <<< clawteam launcher <<<
 """
 
