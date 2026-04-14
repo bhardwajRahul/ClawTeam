@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import os
-import shlex
 import subprocess
 
 from clawteam.spawn.adapters import NativeCliAdapter, is_claude_command, is_pi_command
 from clawteam.spawn.base import SpawnBackend
 from clawteam.spawn.cli_env import build_spawn_path, resolve_clawteam_executable
 from clawteam.spawn.command_validation import validate_spawn_command
+from clawteam.spawn.keepalive import build_keepalive_shell_command, build_resume_command
+from clawteam.team.models import get_data_dir
 
 
 class SubprocessBackend(SpawnBackend):
@@ -32,11 +33,13 @@ class SubprocessBackend(SpawnBackend):
         skip_permissions: bool = False,
         system_prompt: str | None = None,
         is_leader: bool = False,
+        keepalive: bool = False,
     ) -> str:
         spawn_env = os.environ.copy()
         clawteam_bin = resolve_clawteam_executable()
         spawn_env.setdefault("LANG", "en_US.UTF-8")
         spawn_env.setdefault("LC_CTYPE", "UTF-8")
+        spawn_env.setdefault("CLAWTEAM_DATA_DIR", str(get_data_dir()))
         spawn_env.update({
             "CLAWTEAM_AGENT_ID": agent_id,
             "CLAWTEAM_AGENT_NAME": agent_name,
@@ -67,6 +70,7 @@ class SubprocessBackend(SpawnBackend):
             skip_permissions=skip_permissions,
             agent_name=agent_name,
             interactive=False,
+            container_env=spawn_env,
         )
         normalized_command = prepared.normalized_command
         validation_command = normalized_command
@@ -74,6 +78,24 @@ class SubprocessBackend(SpawnBackend):
         if system_prompt and (is_claude_command(normalized_command) or is_pi_command(normalized_command)):
             insert_at = final_command.index("-p") if "-p" in final_command else len(final_command)
             final_command[insert_at:insert_at] = ["--append-system-prompt", system_prompt]
+        resume_base = build_resume_command(normalized_command)
+        resume_command: list[str] = []
+        if resume_base:
+            resume_prepared = self._adapter.prepare_command(
+                resume_base,
+                cwd=cwd,
+                skip_permissions=skip_permissions,
+                agent_name=agent_name,
+                interactive=False,
+                container_env=spawn_env,
+            )
+            resume_command = list(resume_prepared.final_command)
+            if system_prompt and (
+                is_claude_command(resume_prepared.normalized_command)
+                or is_pi_command(resume_prepared.normalized_command)
+            ):
+                insert_at = resume_command.index("-p") if "-p" in resume_command else len(resume_command)
+                resume_command[insert_at:insert_at] = ["--append-system-prompt", system_prompt]
 
         command_error = validate_spawn_command(validation_command, path=spawn_env["PATH"], cwd=cwd)
         if command_error:
@@ -87,13 +109,14 @@ class SubprocessBackend(SpawnBackend):
             exit_hook = f"{exit_cmd} lifecycle on-exit --team {subprocess.list2cmdline([team_name])} --agent {subprocess.list2cmdline([agent_name])}"
             shell_cmd = f"{cmd_str} & {exit_hook}"
         else:
-            cmd_str = " ".join(shlex.quote(c) for c in final_command)
-            exit_cmd = shlex.quote(clawteam_bin) if os.path.isabs(clawteam_bin) else "clawteam"
-            exit_hook = (
-                f"{exit_cmd} lifecycle on-exit --team {shlex.quote(team_name)} "
-                f"--agent {shlex.quote(agent_name)}"
+            shell_cmd = build_keepalive_shell_command(
+                final_command,
+                resume_command=resume_command,
+                clawteam_bin=clawteam_bin if os.path.isabs(clawteam_bin) else "clawteam",
+                team_name=team_name,
+                agent_name=agent_name,
+                keepalive=keepalive,
             )
-            shell_cmd = f"{cmd_str}; {exit_hook}"
 
         process = subprocess.Popen(
             shell_cmd,

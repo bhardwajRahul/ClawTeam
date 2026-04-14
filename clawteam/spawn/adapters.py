@@ -6,7 +6,15 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from clawteam.spawn.command_validation import normalize_spawn_command
+from clawteam.spawn.cli_env import build_docker_clawteam_runtime
+from clawteam.spawn.command_validation import (
+    ensure_docker_env,
+    ensure_docker_mount,
+    command_has_workspace_arg as has_workspace_arg,
+    ensure_docker_workspace,
+    docker_wrapped_cli_name,
+    normalize_spawn_command,
+)
 
 
 @dataclass(frozen=True)
@@ -30,6 +38,7 @@ class NativeCliAdapter:
         skip_permissions: bool = False,
         interactive: bool = False,
         agent_name: str | None = None,
+        container_env: dict[str, str] | None = None,
     ) -> PreparedCommand:
         normalized_command = normalize_spawn_command(command)
         final_command = list(normalized_command)
@@ -53,12 +62,40 @@ class NativeCliAdapter:
                 final_command.append("--yolo")
 
         if is_kimi_command(normalized_command):
-            if cwd and not command_has_workspace_arg(normalized_command):
+            if cwd and not has_workspace_arg(normalized_command):
                 final_command.extend(["-w", cwd])
             if prompt:
                 final_command.extend(["--print", "-p", prompt])
         elif is_nanobot_command(normalized_command):
-            if cwd and not command_has_workspace_arg(normalized_command):
+            if docker_wrapped_cli_name(normalized_command) == "nanobot":
+                if cwd:
+                    final_command = ensure_docker_workspace(final_command, cwd)
+                if container_env:
+                    data_dir = container_env.get("CLAWTEAM_DATA_DIR")
+                    if data_dir:
+                        final_command = ensure_docker_mount(final_command, data_dir)
+                    docker_runtime = build_docker_clawteam_runtime()
+                    if docker_runtime:
+                        for host_path, container_path in docker_runtime.mounts:
+                            final_command = ensure_docker_mount(final_command, host_path, container_path)
+                    docker_env = {
+                        key: value
+                        for key, value in container_env.items()
+                        if value
+                        and (
+                            (key.startswith("CLAWTEAM_") and key != "CLAWTEAM_BIN")
+                            or key.startswith("OH_")
+                            or key.endswith("_API_KEY")
+                            or key.endswith("_BASE_URL")
+                            or key.endswith("_API_BASE")
+                            or key == "GOOGLE_CLOUD_PROJECT"
+                        )
+                    }
+                    if docker_runtime:
+                        docker_env.update(docker_runtime.env)
+                    if docker_env:
+                        final_command = ensure_docker_env(final_command, docker_env)
+            if cwd and not has_workspace_arg(normalized_command):
                 final_command.extend(["-w", cwd])
             if prompt:
                 final_command.extend(["-m", prompt])
@@ -81,6 +118,12 @@ class NativeCliAdapter:
             if prompt:
                 if interactive:
                     final_command.append(prompt)
+                else:
+                    final_command.extend(["-p", prompt])
+        elif is_gemini_command(normalized_command):
+            if prompt:
+                if interactive:
+                    final_command.extend(["-i", prompt])
                 else:
                     final_command.extend(["-p", prompt])
         elif prompt:
@@ -144,7 +187,7 @@ def _is_codex_noninteractive_command(command: list[str]) -> bool:
 
 def is_nanobot_command(command: list[str]) -> bool:
     """Check if the command is a nanobot CLI invocation."""
-    return command_basename(command) == "nanobot"
+    return command_basename(command) == "nanobot" or docker_wrapped_cli_name(command) == "nanobot"
 
 
 def is_gemini_command(command: list[str]) -> bool:
@@ -190,8 +233,3 @@ def is_interactive_cli(command: list[str]) -> bool:
         or is_openclaw_command(command)
         or is_pi_command(command)
     )
-
-
-def command_has_workspace_arg(command: list[str]) -> bool:
-    """Return True when a command already specifies a workspace."""
-    return "-w" in command or "--workspace" in command

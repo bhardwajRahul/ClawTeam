@@ -57,7 +57,7 @@ def main(
         None, "--transport", help="Transport backend: file or p2p.",
     ),
 ):
-    """oh - Framework-agnostic multi-agent coordination CLI."""
+    """clawteam - Framework-agnostic multi-agent coordination CLI."""
     global _json_output, _data_dir
     _json_output = json_out
     if data_dir:
@@ -728,7 +728,7 @@ def profile_remove(
 @profile_app.command("test")
 def profile_test(
     name: str = typer.Argument(..., help="Profile name"),
-    prompt: str = typer.Option("Reply with exactly OH_PROFILE_OK", "--prompt", help="Smoke test prompt"),
+    prompt: str = typer.Option("Reply with exactly CLAWTEAM_PROFILE_OK", "--prompt", help="Smoke test prompt"),
     cwd: Optional[str] = typer.Option(None, "--cwd", help="Working directory for the test run"),
 ):
     """Run a non-interactive smoke test for a profile."""
@@ -1866,8 +1866,9 @@ def inbox_watch(
     """Watch inbox for new messages (blocking, Ctrl+C to stop).
 
     With --exec, runs a shell command for each message. Message data is passed
-    via env vars: OH_MSG_FROM, OH_MSG_TO, OH_MSG_CONTENT,
-    OH_MSG_TYPE, OH_MSG_TIMESTAMP, OH_MSG_JSON.
+    via env vars: CLAWTEAM_MSG_FROM, CLAWTEAM_MSG_TO, CLAWTEAM_MSG_CONTENT,
+    CLAWTEAM_MSG_TYPE, CLAWTEAM_MSG_TIMESTAMP, CLAWTEAM_MSG_JSON.
+    Legacy OH_MSG_* aliases are still exported for compatibility.
     """
     from clawteam.identity import AgentIdentity
     from clawteam.team.mailbox import MailboxManager
@@ -2912,6 +2913,28 @@ def lifecycle_on_exit(
     )
 
 
+@lifecycle_app.command("should-keepalive")
+def lifecycle_should_keepalive(
+    team: str = typer.Option(..., "--team", "-t", help="Team name"),
+    agent: str = typer.Option(..., "--agent", "-n", help="Agent name"),
+):
+    """Exit zero when an agent should auto-resume after a clean exit."""
+    from clawteam.team.mailbox import MailboxManager
+    from clawteam.team.manager import TeamManager
+    from clawteam.team.models import MessageType
+
+    if TeamManager.get_team(team) is None:
+        raise typer.Exit(1)
+
+    inbox_name = TeamManager.resolve_inbox(team, agent)
+    mailbox = MailboxManager(team)
+    for msg in mailbox.peek(inbox_name):
+        if msg.type == MessageType.shutdown_approved:
+            raise typer.Exit(1)
+
+    raise typer.Exit(0)
+
+
 @lifecycle_app.command("on-crash")
 def lifecycle_on_crash(
     team: str = typer.Option(..., "--team", "-t", help="Team name"),
@@ -2990,6 +3013,7 @@ def spawn_agent(
     skip_permissions: Optional[bool] = typer.Option(None, "--skip-permissions/--no-skip-permissions", help="Skip tool approval for claude (default: from config, true)"),
     resume: bool = typer.Option(False, "--resume", "-r", help="Resume previous session if available"),
     replace: bool = typer.Option(False, "--replace", help="Replace a running agent with the same name"),
+    keepalive: bool = typer.Option(True, "--keepalive/--no-keepalive", help="Keep resumable interactive agents attached and auto-resume after clean exit"),
     skill: Optional[list[str]] = typer.Option(None, "--skill", help="Skill name(s) to inject into the agent's system prompt (repeatable, claude only)"),
 ):
     """Spawn a new agent process with identity + task as its initial prompt.
@@ -3110,7 +3134,7 @@ def spawn_agent(
             name=_team,
             leader_name=_name,
             leader_id=_id,
-            description="Auto-created by oh spawn",
+            description="Auto-created by clawteam spawn",
             user=user_name,
             leader_agent_type=agent_type,
         )
@@ -3187,6 +3211,7 @@ def spawn_agent(
         cwd=cwd,
         skip_permissions=skip_permissions,
         system_prompt=system_prompt,
+        keepalive=keepalive,
     )
 
     if result.startswith("Error"):
@@ -3273,7 +3298,7 @@ def identity_set(
     else:
         console.print("Run the following to set your identity:\n")
         console.print(output)
-        console.print(f"\nOr use: eval $(oh identity set {' '.join(sys.argv[3:])})")
+        console.print(f"\nOr use: eval $(clawteam identity set {' '.join(sys.argv[3:])})")
 
 
 # ============================================================================
@@ -4063,6 +4088,7 @@ def launch_team(
             cwd=cwd,
             skip_permissions=skip_permissions,
             is_leader=(agent.name == tmpl.leader.name),
+            keepalive=True,
         )
         spawned.append({"name": agent.name, "id": a_id, "type": agent.type, "result": result})
 
@@ -4086,9 +4112,9 @@ def launch_team(
         console.print(table)
         console.print()
         if be_name == "tmux":
-            console.print(f"[bold]Attach:[/bold] tmux attach -t oh-{t_name}")
-        console.print(f"[bold]Board:[/bold]  oh board show {t_name}")
-        console.print(f"[bold]Inbox:[/bold]  oh inbox peek {t_name} --agent <name>")
+            console.print(f"[bold]Attach:[/bold] tmux attach -t clawteam-{t_name}")
+        console.print(f"[bold]Board:[/bold]  clawteam board show {t_name}")
+        console.print(f"[bold]Inbox:[/bold]  clawteam inbox peek {t_name} --agent <name>")
 
     _output(out, _human)
 
@@ -4255,7 +4281,7 @@ def harness_start(
         console.print(f"  Team: {team}")
         console.print(f"  Goal: {goal}")
         console.print(f"  Phase: {orch.state.current_phase.value}")
-        console.print(f"\nAdvance: oh harness advance {team}")
+        console.print(f"\nAdvance: clawteam harness advance {team}")
 
     _output({"harness_id": harness_id, "team": team, "phase": orch.state.current_phase.value}, _human)
 
@@ -4434,10 +4460,11 @@ def run_command(
     workspace: bool = typer.Option(False, "--workspace", "-w", help="Create isolated workspace"),
     skill: list[str] = typer.Option([], "--skill", "-s", help="Skills to inject"),
     resume: bool = typer.Option(False, "--resume", help="Resume previous session"),
+    keepalive: bool = typer.Option(False, "--keepalive/--no-keepalive", help="Keep resumable interactive agents attached and auto-resume after clean exit"),
 ) -> None:
     """Wrap a CLI agent with ClawTeam lifecycle management.
 
-    Example: oh run claude "Fix the login bug"
+    Example: clawteam run claude "Fix the login bug"
     """
     import uuid as _uuid
 
@@ -4531,6 +4558,7 @@ def run_command(
         cwd=cwd,
         skip_permissions=cfg.skip_permissions,
         system_prompt=system_prompt,
+        keepalive=keepalive,
     )
 
     if result.startswith("Error"):

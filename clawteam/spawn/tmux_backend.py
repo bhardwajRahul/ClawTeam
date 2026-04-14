@@ -25,6 +25,8 @@ from clawteam.spawn.adapters import (
 from clawteam.spawn.base import SpawnBackend
 from clawteam.spawn.cli_env import build_spawn_path, resolve_clawteam_executable
 from clawteam.spawn.command_validation import validate_spawn_command
+from clawteam.spawn.keepalive import build_keepalive_shell_command, build_resume_command
+from clawteam.team.models import get_data_dir
 
 _SHELL_ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 
@@ -32,7 +34,7 @@ _SHELL_ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 class TmuxBackend(SpawnBackend):
     """Spawn agents in tmux windows for visual monitoring.
 
-    Each agent gets its own tmux window in a session named ``oh-{team}``.
+    Each agent gets its own tmux window in a session named ``clawteam-{team}``.
     Agents run in interactive mode so their work is visible in the tmux pane.
     """
 
@@ -53,6 +55,7 @@ class TmuxBackend(SpawnBackend):
         skip_permissions: bool = False,
         system_prompt: str | None = None,
         is_leader: bool = False,
+        keepalive: bool = False,
     ) -> str:
         if not shutil.which("tmux"):
             return "Error: tmux not installed"
@@ -65,6 +68,7 @@ class TmuxBackend(SpawnBackend):
         # normalize TERM to a sensible value before exporting it into the pane.
         if env_vars.get("TERM", "").lower() == "dumb":
             env_vars["TERM"] = "xterm-256color"
+        env_vars.setdefault("CLAWTEAM_DATA_DIR", str(get_data_dir()))
         env_vars.update({
             "CLAWTEAM_AGENT_ID": agent_id,
             "CLAWTEAM_AGENT_NAME": agent_name,
@@ -89,6 +93,7 @@ class TmuxBackend(SpawnBackend):
             skip_permissions=skip_permissions,
             agent_name=agent_name,
             interactive=True,
+            container_env=env_vars,
         )
         normalized_command = prepared.normalized_command
         validation_command = normalized_command
@@ -97,6 +102,24 @@ class TmuxBackend(SpawnBackend):
         if system_prompt and (is_claude_command(normalized_command) or is_pi_command(normalized_command)):
             insert_at = final_command.index("-p") if "-p" in final_command else len(final_command)
             final_command[insert_at:insert_at] = ["--append-system-prompt", system_prompt]
+        resume_base = build_resume_command(normalized_command)
+        resume_command: list[str] = []
+        if resume_base:
+            resume_prepared = self._adapter.prepare_command(
+                resume_base,
+                cwd=cwd,
+                skip_permissions=skip_permissions,
+                agent_name=agent_name,
+                interactive=True,
+                container_env=env_vars,
+            )
+            resume_command = list(resume_prepared.final_command)
+            if system_prompt and (
+                is_claude_command(resume_prepared.normalized_command)
+                or is_pi_command(resume_prepared.normalized_command)
+            ):
+                insert_at = resume_command.index("-p") if "-p" in resume_command else len(resume_command)
+                resume_command[insert_at:insert_at] = ["--append-system-prompt", system_prompt]
 
         command_error = validate_spawn_command(validation_command, path=env_vars["PATH"], cwd=cwd)
         if command_error:
@@ -122,15 +145,21 @@ class TmuxBackend(SpawnBackend):
         env_file.close()
         env_source_cmd = f". {shlex.quote(env_file.name)}"
 
-        cmd_str = " ".join(shlex.quote(c) for c in final_command)
-        exit_cmd = shlex.quote(clawteam_bin) if os.path.isabs(clawteam_bin) else "clawteam"
+        wrapped_cmd = build_keepalive_shell_command(
+            final_command,
+            resume_command=resume_command,
+            clawteam_bin=clawteam_bin if os.path.isabs(clawteam_bin) else "clawteam",
+            team_name=team_name,
+            agent_name=agent_name,
+            keepalive=keepalive,
+        )
         # Unset Claude nesting-detection env vars so spawned claude agents
         # don't refuse to start when the leader is itself a claude session.
         unset_clause = "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION 2>/dev/null; "
         if cwd:
-            full_cmd = f"{unset_clause}{env_source_cmd}; cd {shlex.quote(cwd)} && {cmd_str}"
+            full_cmd = f"{unset_clause}{env_source_cmd}; cd {shlex.quote(cwd)} && {wrapped_cmd}"
         else:
-            full_cmd = f"{unset_clause}{env_source_cmd}; {cmd_str}"
+            full_cmd = f"{unset_clause}{env_source_cmd}; {wrapped_cmd}"
 
         # Check if tmux session exists
         check = subprocess.run(
@@ -167,12 +196,13 @@ class TmuxBackend(SpawnBackend):
             )
 
         # Set tmux native hooks for reliable lifecycle management
+        clawteam_cmd = shlex.quote(clawteam_bin) if os.path.isabs(clawteam_bin) else "clawteam"
         _exit_hook_cmd = (
-            f"{exit_cmd} lifecycle on-exit --team {shlex.quote(team_name)} "
+            f"{clawteam_cmd} lifecycle on-exit --team {shlex.quote(team_name)} "
             f"--agent {shlex.quote(agent_name)}"
         )
         _crash_hook_cmd = (
-            f"{exit_cmd} lifecycle on-crash --team {shlex.quote(team_name)} "
+            f"{clawteam_cmd} lifecycle on-crash --team {shlex.quote(team_name)} "
             f"--agent {shlex.quote(agent_name)}"
         )
         subprocess.run(
@@ -198,7 +228,7 @@ class TmuxBackend(SpawnBackend):
             return (
                 f"Error: tmux pane for '{normalized_command[0]}' did not become visible "
                 f"within {pane_ready_timeout:.1f}s. Verify the CLI works standalone before "
-                "using it with oh spawn."
+                "using it with clawteam spawn."
             )
 
         _confirm_workspace_trust_if_prompted(

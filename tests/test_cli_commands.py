@@ -136,6 +136,38 @@ def test_inbox_send_reads_content_from_stdin_when_argument_missing(tmp_path):
     assert messages[0].content == "HELLO FROM STDIN"
 
 
+def test_lifecycle_should_keepalive_stops_when_shutdown_approved(tmp_path):
+    runner = CliRunner()
+    env = {
+        "HOME": str(tmp_path),
+        "CLAWTEAM_DATA_DIR": str(tmp_path / ".clawteam"),
+    }
+
+    TeamManager.create_team(
+        name="demo",
+        leader_name="leader",
+        leader_id="leader001",
+    )
+    TeamManager.add_member("demo", "worker", agent_id="worker001", agent_type="codex")
+
+    mailbox = MailboxManager("demo")
+    mailbox.send(
+        from_agent="leader",
+        to="worker",
+        msg_type=MessageType.shutdown_approved,
+        request_id="req-1",
+        content="worker shutting down.",
+    )
+
+    result = runner.invoke(
+        app,
+        ["lifecycle", "should-keepalive", "--team", "demo", "--agent", "worker"],
+        env=env,
+    )
+
+    assert result.exit_code == 1
+
+
 
 def test_team_join_status_reports_approval(tmp_path):
     runner = CliRunner()

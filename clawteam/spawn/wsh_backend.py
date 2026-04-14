@@ -20,7 +20,9 @@ from clawteam.spawn.adapters import (
 from clawteam.spawn.base import SpawnBackend
 from clawteam.spawn.cli_env import build_spawn_path, resolve_clawteam_executable
 from clawteam.spawn.command_validation import validate_spawn_command
+from clawteam.spawn.keepalive import build_keepalive_shell_command, build_resume_command
 from clawteam.spawn.wsh_rpc import WshRpcClient
+from clawteam.team.models import get_data_dir
 
 
 def _validate_path(path: str) -> str | None:
@@ -225,6 +227,7 @@ class WshBackend(SpawnBackend):
         skip_permissions: bool = False,
         system_prompt: str | None = None,
         is_leader: bool = False,
+        keepalive: bool = False,
     ) -> str:
         """Spawn a new agent in a TideTerm block."""
         wsh_bin = _find_wsh()
@@ -238,6 +241,7 @@ class WshBackend(SpawnBackend):
 
         clawteam_bin = resolve_clawteam_executable()
         env_vars = os.environ.copy()
+        env_vars.setdefault("CLAWTEAM_DATA_DIR", str(get_data_dir()))
         env_vars.update(
             {
                 "CLAWTEAM_AGENT_ID": agent_id,
@@ -260,6 +264,7 @@ class WshBackend(SpawnBackend):
             skip_permissions=skip_permissions,
             agent_name=agent_name,
             interactive=True,
+            container_env=env_vars,
         )
         normalized_command = prepared.normalized_command
         validation_command = normalized_command
@@ -274,6 +279,24 @@ class WshBackend(SpawnBackend):
             else:
                 insert_at = 1
             final_command[insert_at:insert_at] = ["--append-system-prompt", system_prompt]
+        resume_base = build_resume_command(normalized_command)
+        resume_command: list[str] = []
+        if resume_base:
+            resume_prepared = self._adapter.prepare_command(
+                resume_base,
+                cwd=cwd,
+                skip_permissions=skip_permissions,
+                agent_name=agent_name,
+                interactive=True,
+                container_env=env_vars,
+            )
+            resume_command = list(resume_prepared.final_command)
+            if system_prompt and is_claude_command(resume_prepared.normalized_command):
+                if "-p" in resume_command:
+                    insert_at = resume_command.index("-p") + 2
+                else:
+                    insert_at = 1
+                resume_command[insert_at:insert_at] = ["--append-system-prompt", system_prompt]
 
         command_error = validate_spawn_command(
             validation_command, path=env_vars.get("PATH", ""), cwd=cwd
@@ -281,11 +304,13 @@ class WshBackend(SpawnBackend):
         if command_error:
             return command_error
 
-        cmd_str = " ".join(shlex.quote(c) for c in final_command)
-        exit_cmd = shlex.quote(clawteam_bin) if os.path.isabs(clawteam_bin) else "clawteam"
-        exit_hook = (
-            f"{exit_cmd} lifecycle on-exit --team {shlex.quote(team_name)} "
-            f"--agent {shlex.quote(agent_name)}"
+        wrapped_cmd = build_keepalive_shell_command(
+            final_command,
+            resume_command=resume_command,
+            clawteam_bin=clawteam_bin if os.path.isabs(clawteam_bin) else "clawteam",
+            team_name=team_name,
+            agent_name=agent_name,
+            keepalive=keepalive,
         )
 
         shell_env_key_re = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
@@ -293,9 +318,9 @@ class WshBackend(SpawnBackend):
         export_prefix = " ".join(f"export {k}={shlex.quote(v)}" for k, v in export_vars.items())
 
         if cwd:
-            full_cmd = f"{export_prefix}; cd {shlex.quote(cwd)} && {cmd_str}; {exit_hook}"
+            full_cmd = f"{export_prefix}; cd {shlex.quote(cwd)} && {wrapped_cmd}"
         else:
-            full_cmd = f"{export_prefix}; {cmd_str}; {exit_hook}"
+            full_cmd = f"{export_prefix}; {wrapped_cmd}"
 
         result = subprocess.run(
             [wsh_bin, "run", "-X", "-c", full_cmd, "--cwd", cwd if cwd else "."],
@@ -327,7 +352,7 @@ class WshBackend(SpawnBackend):
             return (
                 f"Error: wsh block for '{normalized_command[0]}' did not become visible "
                 f"within {cfg.spawn_ready_timeout:.1f}s. Verify CLI works standalone before "
-                "using it with oh spawn."
+                "using it with clawteam spawn."
             )
 
         subprocess.run(

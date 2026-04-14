@@ -4,8 +4,15 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
+from unittest.mock import patch
 
-from clawteam.spawn.cli_env import build_spawn_path, resolve_clawteam_executable
+from clawteam.spawn.cli_env import (
+    DockerClawteamRuntime,
+    build_docker_clawteam_runtime,
+    build_spawn_path,
+    resolve_clawteam_executable,
+)
 from clawteam.spawn.subprocess_backend import SubprocessBackend
 from clawteam.spawn.tmux_backend import (
     TmuxBackend,
@@ -102,6 +109,7 @@ def test_subprocess_backend_discards_output_and_preserves_exit_hook_and_registry
         prompt="do work",
         cwd="/tmp/demo",
         skip_permissions=True,
+        keepalive=True,
     )
 
     assert result == "Agent 'worker1' spawned as subprocess (pid=9876)"
@@ -111,6 +119,7 @@ def test_subprocess_backend_discards_output_and_preserves_exit_hook_and_registry
     assert (
         f"{clawteam_bin} lifecycle on-exit --team demo-team --agent worker1" in captured["cmd"]
     )
+    assert f"{clawteam_bin} lifecycle should-keepalive --team demo-team --agent worker1" in captured["cmd"]
     assert registered == {
         "team_name": "demo-team",
         "agent_name": "worker1",
@@ -259,6 +268,15 @@ def test_tmux_backend_uses_configured_timeout_for_workspace_trust_prompt(monkeyp
         "clawteam.spawn.tmux_backend._confirm_workspace_trust_if_prompted",
         fake_confirm,
     )
+    monkeypatch.setattr(
+        "clawteam.spawn.tmux_backend._dismiss_codex_update_prompt_if_present",
+        lambda *_, **__: False,
+    )
+    monkeypatch.setattr(
+        "clawteam.spawn.tmux_backend._wait_for_cli_ready",
+        lambda *_, **__: True,
+    )
+    monkeypatch.setattr("clawteam.spawn.tmux_backend._inject_prompt_via_buffer", lambda *_, **__: None)
     monkeypatch.setattr("clawteam.spawn.registry.register_agent", lambda **_: None)
 
     backend = TmuxBackend()
@@ -405,6 +423,95 @@ def test_tmux_backend_normalizes_bare_nanobot_to_agent(monkeypatch, tmp_path):
     new_session = next(call for call in run_calls if call[:3] == ["tmux", "new-session", "-d"])
     full_cmd = new_session[-1]
     assert " nanobot agent -w /tmp/demo -m 'do work'" in full_cmd
+
+
+def test_tmux_backend_supports_docker_wrapped_nanobot(monkeypatch, tmp_path):
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", "/tmp/.clawteam")
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-key")
+    clawteam_bin = tmp_path / "venv" / "bin" / "clawteam"
+    clawteam_bin.parent.mkdir(parents=True)
+    clawteam_bin.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(sys, "argv", [str(clawteam_bin)])
+
+    run_calls: list[list[str]] = []
+
+    class Result:
+        def __init__(self, returncode: int = 0, stdout: str = ""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = ""
+
+    def fake_run(args, **kwargs):
+        run_calls.append(args)
+        if args[:3] == ["tmux", "has-session", "-t"]:
+            return Result(returncode=1)
+        if args[:3] == ["tmux", "list-panes", "-t"]:
+            return Result(returncode=0, stdout="9876\n")
+        return Result(returncode=0)
+
+    def fake_which(name, path=None):
+        if name == "tmux":
+            return "/usr/bin/tmux"
+        if name == "docker":
+            return "/usr/bin/docker"
+        return None
+
+    monkeypatch.setattr("clawteam.spawn.tmux_backend.shutil.which", fake_which)
+    monkeypatch.setattr("clawteam.spawn.command_validation.shutil.which", fake_which)
+    monkeypatch.setattr("clawteam.spawn.tmux_backend.subprocess.run", fake_run)
+    monkeypatch.setattr("clawteam.spawn.tmux_backend.time.sleep", lambda *_: None)
+    monkeypatch.setattr("clawteam.spawn.registry.register_agent", lambda **_: None)
+
+    with patch(
+        "clawteam.spawn.adapters.build_docker_clawteam_runtime",
+        return_value=DockerClawteamRuntime(
+            mounts=(
+                ("/tmp/docker-bootstrap", "/usr/local/bin/clawteam"),
+                ("/tmp/docker-clawteam", "/usr/local/bin/clawteam-host"),
+                ("/tmp/docker-venv", "/tmp/docker-venv"),
+                ("/tmp/docker-src", "/tmp/docker-src"),
+            ),
+            env={
+                "CLAWTEAM_BIN": "/usr/local/bin/clawteam",
+                "CLAWTEAM_DOCKER_HOST_WRAPPER": "/usr/local/bin/clawteam-host",
+                "CLAWTEAM_DOCKER_SOURCE_ROOT": "/tmp/docker-src",
+            },
+        ),
+    ):
+        backend = TmuxBackend()
+        backend.spawn(
+            command=["docker", "run", "--rm", "hkuds/nanobot"],
+            agent_name="worker1",
+            agent_id="agent-1",
+            agent_type="general-purpose",
+            team_name="demo-team",
+            prompt="do work",
+            cwd="/tmp/demo",
+            skip_permissions=True,
+        )
+
+    new_session = next(call for call in run_calls if call[:3] == ["tmux", "new-session", "-d"])
+    full_cmd = new_session[-1]
+    assert " docker run --rm -w /tmp/demo -v /tmp/demo:/tmp/demo " in full_cmd
+    assert " -v /tmp/docker-bootstrap:/usr/local/bin/clawteam " in full_cmd
+    assert " -v /tmp/docker-clawteam:/usr/local/bin/clawteam-host " in full_cmd
+    assert " -v /tmp/.clawteam:/tmp/.clawteam " in full_cmd
+    assert " -v /tmp/docker-venv:/tmp/docker-venv " in full_cmd
+    assert " -v /tmp/docker-src:/tmp/docker-src " in full_cmd
+    assert " -e CLAWTEAM_DATA_DIR=/tmp/.clawteam " in full_cmd
+    assert " -e CLAWTEAM_BIN=/usr/local/bin/clawteam " in full_cmd
+    assert " -e CLAWTEAM_DOCKER_HOST_WRAPPER=/usr/local/bin/clawteam-host " in full_cmd
+    assert " -e CLAWTEAM_DOCKER_SOURCE_ROOT=/tmp/docker-src " in full_cmd
+    assert " -e CLAWTEAM_AGENT_ID=agent-1 " in full_cmd
+    assert " -e CLAWTEAM_AGENT_NAME=worker1 " in full_cmd
+    assert " -e CLAWTEAM_AGENT_TYPE=general-purpose " in full_cmd
+    assert " -e CLAWTEAM_TEAM_NAME=demo-team " in full_cmd
+    assert " -e CLAWTEAM_AGENT_LEADER=0 " in full_cmd
+    assert " -e CLAWTEAM_WORKSPACE_DIR=/tmp/demo " in full_cmd
+    assert " -e CLAWTEAM_CONTEXT_ENABLED=1 " in full_cmd
+    assert " -e OPENAI_API_KEY=secret-key " in full_cmd
+    assert " hkuds/nanobot nanobot agent -w /tmp/demo -m 'do work'" in full_cmd
 
 
 def test_tmux_backend_confirms_claude_workspace_trust_prompt(monkeypatch):
@@ -654,8 +761,78 @@ def test_subprocess_backend_normalizes_nanobot_and_uses_message_flag(monkeypatch
     assert "nanobot agent -w /tmp/demo -m 'do work'" in captured["cmd"]
 
 
+def test_subprocess_backend_supports_docker_wrapped_nanobot(monkeypatch, tmp_path):
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", "/tmp/.clawteam")
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-key")
+    clawteam_bin = tmp_path / "venv" / "bin" / "clawteam"
+    clawteam_bin.parent.mkdir(parents=True)
+    clawteam_bin.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(sys, "argv", [str(clawteam_bin)])
+
+    captured: dict[str, object] = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return DummyProcess()
+
+    monkeypatch.setattr(
+        "clawteam.spawn.command_validation.shutil.which",
+        lambda name, path=None: "/usr/bin/docker" if name == "docker" else None,
+    )
+    monkeypatch.setattr("clawteam.spawn.subprocess_backend.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("clawteam.spawn.registry.register_agent", lambda **_: None)
+
+    with patch(
+        "clawteam.spawn.adapters.build_docker_clawteam_runtime",
+        return_value=DockerClawteamRuntime(
+            mounts=(
+                ("/tmp/docker-bootstrap", "/usr/local/bin/clawteam"),
+                ("/tmp/docker-clawteam", "/usr/local/bin/clawteam-host"),
+                ("/tmp/docker-venv", "/tmp/docker-venv"),
+                ("/tmp/docker-src", "/tmp/docker-src"),
+            ),
+            env={
+                "CLAWTEAM_BIN": "/usr/local/bin/clawteam",
+                "CLAWTEAM_DOCKER_HOST_WRAPPER": "/usr/local/bin/clawteam-host",
+                "CLAWTEAM_DOCKER_SOURCE_ROOT": "/tmp/docker-src",
+            },
+        ),
+    ):
+        backend = SubprocessBackend()
+        backend.spawn(
+            command=["docker", "run", "--rm", "hkuds/nanobot"],
+            agent_name="worker1",
+            agent_id="agent-1",
+            agent_type="general-purpose",
+            team_name="demo-team",
+            prompt="do work",
+            cwd="/tmp/demo",
+            skip_permissions=True,
+        )
+
+    assert "docker run --rm -w /tmp/demo -v /tmp/demo:/tmp/demo " in captured["cmd"]
+    assert " -v /tmp/.clawteam:/tmp/.clawteam " in captured["cmd"]
+    assert " -v /tmp/docker-bootstrap:/usr/local/bin/clawteam " in captured["cmd"]
+    assert " -v /tmp/docker-clawteam:/usr/local/bin/clawteam-host " in captured["cmd"]
+    assert " -v /tmp/docker-venv:/tmp/docker-venv " in captured["cmd"]
+    assert " -v /tmp/docker-src:/tmp/docker-src " in captured["cmd"]
+    assert " -e CLAWTEAM_DATA_DIR=/tmp/.clawteam " in captured["cmd"]
+    assert " -e CLAWTEAM_BIN=/usr/local/bin/clawteam " in captured["cmd"]
+    assert " -e CLAWTEAM_DOCKER_HOST_WRAPPER=/usr/local/bin/clawteam-host " in captured["cmd"]
+    assert " -e CLAWTEAM_DOCKER_SOURCE_ROOT=/tmp/docker-src " in captured["cmd"]
+    assert " -e CLAWTEAM_AGENT_ID=agent-1 " in captured["cmd"]
+    assert " -e CLAWTEAM_AGENT_NAME=worker1 " in captured["cmd"]
+    assert " -e CLAWTEAM_AGENT_TYPE=general-purpose " in captured["cmd"]
+    assert " -e CLAWTEAM_TEAM_NAME=demo-team " in captured["cmd"]
+    assert " -e CLAWTEAM_AGENT_LEADER=0 " in captured["cmd"]
+    assert " -e CLAWTEAM_WORKSPACE_DIR=/tmp/demo " in captured["cmd"]
+    assert " -e OPENAI_API_KEY=secret-key " in captured["cmd"]
+    assert " hkuds/nanobot nanobot agent -w /tmp/demo -m 'do work'" in captured["cmd"]
+
+
 def test_tmux_backend_gemini_skip_permissions_and_prompt(monkeypatch, tmp_path):
-    """Gemini gets --yolo for permissions and -p for prompt."""
+    """Gemini tmux spawn uses --yolo and interactive -i prompt mode."""
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     clawteam_bin = tmp_path / "venv" / "bin" / "clawteam"
     clawteam_bin.parent.mkdir(parents=True)
@@ -705,7 +882,7 @@ def test_tmux_backend_gemini_skip_permissions_and_prompt(monkeypatch, tmp_path):
 
     new_session = next(call for call in run_calls if call[:3] == ["tmux", "new-session", "-d"])
     full_cmd = new_session[-1]
-    assert " gemini --yolo -p 'analyze this repo'" in full_cmd
+    assert " gemini --yolo -i 'analyze this repo'" in full_cmd
 
 
 def test_subprocess_backend_gemini_skip_permissions_and_prompt(monkeypatch, tmp_path):
@@ -924,6 +1101,64 @@ def test_resolve_clawteam_executable_accepts_relative_path_with_explicit_directo
 
     assert resolve_clawteam_executable() == str(relative_bin.resolve())
     assert build_spawn_path("/usr/bin:/bin").startswith(f"{relative_bin.parent.resolve()}:")
+
+
+def test_build_docker_clawteam_runtime_includes_wrapper_venv_and_source(monkeypatch, tmp_path):
+    wrapper = tmp_path / "bin" / "clawteam"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f"exec {tmp_path}/venv/bin/python -m clawteam.cli.commands \"$@\"\n"
+    )
+    (tmp_path / "venv" / "bin").mkdir(parents=True)
+
+    monkeypatch.setattr(
+        "clawteam.spawn.cli_env.resolve_clawteam_executable",
+        lambda: str(wrapper),
+    )
+    monkeypatch.setattr(
+        "clawteam.spawn.cli_env.resolve_clawteam_source_root",
+        lambda: str(tmp_path / "src"),
+    )
+    monkeypatch.setattr(
+        "clawteam.spawn.cli_env._ensure_docker_bootstrap_script",
+        lambda: str(tmp_path / "bootstrap.sh"),
+    )
+    (tmp_path / "src").mkdir()
+
+    runtime = build_docker_clawteam_runtime()
+
+    assert runtime == DockerClawteamRuntime(
+        mounts=(
+            (str((tmp_path / "bootstrap.sh").resolve()), "/usr/local/bin/clawteam"),
+            (str(wrapper.resolve()), "/usr/local/bin/clawteam-host"),
+            (str((tmp_path / "venv").resolve()), str((tmp_path / "venv").resolve())),
+            (str((tmp_path / "src").resolve()), str((tmp_path / "src").resolve())),
+        ),
+        env={
+            "CLAWTEAM_BIN": "/usr/local/bin/clawteam",
+            "CLAWTEAM_DOCKER_HOST_WRAPPER": "/usr/local/bin/clawteam-host",
+            "CLAWTEAM_DOCKER_SOURCE_ROOT": str((tmp_path / "src").resolve()),
+        },
+    )
+
+
+def test_build_docker_clawteam_runtime_returns_none_for_non_absolute_binary(monkeypatch):
+    monkeypatch.setattr("clawteam.spawn.cli_env.resolve_clawteam_executable", lambda: "clawteam")
+    assert build_docker_clawteam_runtime() is None
+
+
+def test_ensure_docker_bootstrap_script_writes_python_fallback(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path / ".clawteam"))
+
+    from clawteam.spawn.cli_env import _ensure_docker_bootstrap_script
+
+    script_path = _ensure_docker_bootstrap_script()
+    content = Path(script_path).read_text(encoding="utf-8")
+
+    assert "CLAWTEAM_DOCKER_HOST_WRAPPER" in content
+    assert "python3 -m clawteam.cli.commands" in content
+    assert "python -m clawteam.cli.commands" in content
 
 
 def test_subprocess_backend_injects_system_prompt_for_claude(monkeypatch, tmp_path):
