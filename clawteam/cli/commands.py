@@ -1976,12 +1976,21 @@ def runtime_watch(
     from clawteam.team.watcher import InboxWatcher
 
     identity = AgentIdentity.from_env()
-    agent_name = TeamManager.resolve_inbox(team, agent or identity.agent_name, identity.user)
+    session_agent_name = agent or identity.agent_name
+    backend_name, _ = _resolve_runtime_backend(team, session_agent_name)
+    if backend_name == "subprocess":
+        console.print(
+            "[red]runtime watch is not supported for subprocess agents.[/red]\n"
+            "Use `runtime inject` for headless delivery or rely on the normal inbox polling loop."
+        )
+        raise typer.Exit(1)
+
+    agent_name = TeamManager.resolve_inbox(team, session_agent_name, identity.user)
     mailbox = MailboxManager(team)
     router = RuntimeRouter(
         team_name=team,
         agent_name=agent_name,
-        session_agent_name=agent or identity.agent_name,
+        session_agent_name=session_agent_name,
     )
 
     if not _json_output:

@@ -545,6 +545,31 @@ def test_runtime_watch_cli_uses_runtime_router(monkeypatch, tmp_path):
     assert captured["runtime_router"].agent_name == "worker"
 
 
+def test_runtime_watch_cli_rejects_subprocess_agents(monkeypatch, tmp_path):
+    runner = CliRunner()
+    env = {
+        "HOME": str(tmp_path),
+        "CLAWTEAM_DATA_DIR": str(tmp_path / ".clawteam"),
+        "CLAWTEAM_USER": "alice",
+        "CLAWTEAM_AGENT_ID": "worker001",
+        "CLAWTEAM_AGENT_NAME": "worker",
+    }
+    TeamManager.create_team(
+        name="demo",
+        leader_name="worker",
+        leader_id="worker001",
+        user="alice",
+    )
+    from clawteam.spawn.registry import register_agent
+
+    register_agent("demo", "worker", backend="subprocess", pid=1234)
+
+    result = runner.invoke(app, ["runtime", "watch", "demo"], env=env)
+
+    assert result.exit_code == 1
+    assert "not supported for subprocess agents" in result.output
+
+
 def test_run_cli_auto_creates_team_and_spawns_wrapped_agent(monkeypatch, tmp_path):
     runner = CliRunner()
     env = {

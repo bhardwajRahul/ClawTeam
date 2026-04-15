@@ -10,7 +10,9 @@ from clawteam.spawn.base import SpawnBackend
 from clawteam.spawn.cli_env import build_spawn_path, resolve_clawteam_executable
 from clawteam.spawn.command_validation import validate_spawn_command
 from clawteam.spawn.keepalive import build_keepalive_shell_command, build_resume_command
-from clawteam.team.models import get_data_dir
+from clawteam.spawn.runtime_notification import render_runtime_notification
+from clawteam.team.mailbox import MailboxManager
+from clawteam.team.models import MessageType, get_data_dir
 
 
 class SubprocessBackend(SpawnBackend):
@@ -149,3 +151,21 @@ class SubprocessBackend(SpawnBackend):
             else:
                 self._processes.pop(name, None)
         return result
+
+    def inject_runtime_message(self, team: str, agent_name: str, envelope) -> tuple[bool, str]:
+        """Deliver a runtime notification through the agent inbox for headless workers."""
+        from clawteam.spawn.registry import is_agent_alive
+
+        alive = is_agent_alive(team, agent_name)
+        if alive is False or alive is None:
+            return False, f"subprocess agent '{team}/{agent_name}' is not alive"
+
+        mailbox = MailboxManager(team)
+        mailbox.send(
+            from_agent=str(getattr(envelope, "source", "system") or "system"),
+            to=agent_name,
+            content=render_runtime_notification(envelope),
+            msg_type=MessageType.message,
+            summary=str(getattr(envelope, "summary", "") or "").strip() or "Runtime update",
+        )
+        return True, f"Queued runtime notification in inbox for subprocess agent {agent_name}"

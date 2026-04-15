@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +23,7 @@ from clawteam.spawn.tmux_backend import (
     _wait_for_cli_ready,
 )
 from clawteam.spawn.wsh_backend import WshBackend
+from clawteam.team.mailbox import MailboxManager
 from clawteam.team.routing_policy import RuntimeEnvelope
 
 
@@ -1492,6 +1494,51 @@ def test_wsh_backend_runtime_injection_returns_false_when_block_missing(monkeypa
 
     assert ok is False
     assert "not found" in reason
+
+
+def test_subprocess_backend_runtime_injection_queues_mailbox_message(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path))
+    from clawteam.team.manager import TeamManager
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+    TeamManager.add_member("demo", "worker", agent_id="worker001")
+    from clawteam.spawn.registry import register_agent
+
+    register_agent("demo", "worker", backend="subprocess", pid=os.getpid())
+
+    ok, reason = SubprocessBackend().inject_runtime_message(
+        team="demo",
+        agent_name="worker",
+        envelope=RuntimeEnvelope(source="leader", target="worker", summary="hello"),
+    )
+
+    assert ok is True
+    assert "Queued runtime notification" in reason
+
+    mailbox = MailboxManager("demo")
+    messages = mailbox.receive("worker")
+    assert len(messages) == 1
+    assert messages[0].from_agent == "leader"
+    assert messages[0].summary == "hello"
+    assert "<summary>" in (messages[0].content or "")
+
+
+def test_subprocess_backend_runtime_injection_returns_false_when_agent_dead(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path))
+    from clawteam.team.manager import TeamManager
+
+    TeamManager.create_team(name="demo", leader_name="leader", leader_id="leader001")
+
+    monkeypatch.setattr("clawteam.spawn.registry.is_agent_alive", lambda team, agent: False)
+
+    ok, reason = SubprocessBackend().inject_runtime_message(
+        team="demo",
+        agent_name="worker",
+        envelope=RuntimeEnvelope(source="leader", target="worker", summary="hello"),
+    )
+
+    assert ok is False
+    assert "not alive" in reason
 
 
 # ---------------------------------------------------------------------------
