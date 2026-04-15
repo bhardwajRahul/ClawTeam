@@ -7,8 +7,27 @@ import uuid
 from dataclasses import dataclass, field
 
 
-def _env(primary_key: str, legacy_key: str, claude_code_key: str, default: str = "") -> str:
-    """Read CLAWTEAM_* first, then legacy OH_*, then CLAUDE_CODE_*."""
+def _env(
+    primary_key: str,
+    legacy_or_claude_key: str,
+    claude_code_key: str | None = None,
+    default: str = "",
+) -> str:
+    """Read CLAWTEAM_* first, then legacy OH_*, then CLAUDE_CODE_*.
+
+    Backward compatibility:
+    - `_env(primary, claude_code_key)`
+    - `_env(primary, claude_code_key, default)`
+    """
+    legacy_key = legacy_or_claude_key
+    if claude_code_key is None:
+        legacy_key = ""
+        claude_code_key = legacy_or_claude_key
+    elif not claude_code_key.startswith(("OH_", "CLAUDE_CODE_", "CLAWTEAM_")):
+        default = claude_code_key
+        legacy_key = ""
+        claude_code_key = legacy_or_claude_key
+
     return (
         os.environ.get(primary_key)
         or os.environ.get(legacy_key)
@@ -17,8 +36,12 @@ def _env(primary_key: str, legacy_key: str, claude_code_key: str, default: str =
     )
 
 
-def _env_bool(primary_key: str, legacy_key: str, claude_code_key: str) -> bool:
-    val = _env(primary_key, legacy_key, claude_code_key)
+def _env_bool(
+    primary_key: str,
+    legacy_or_claude_key: str,
+    claude_code_key: str | None = None,
+) -> bool:
+    val = _env(primary_key, legacy_or_claude_key, claude_code_key)
     return val.lower() in ("1", "true", "yes")
 
 
