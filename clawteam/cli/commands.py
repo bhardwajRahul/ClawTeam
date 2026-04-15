@@ -3153,12 +3153,14 @@ def spawn_agent(
     except ValueError:
         pass  # already a member, ignore
 
+    leader_name = TeamManager.get_leader_name(_team) or "leader"
+    is_leader = _name == leader_name
+
     # Build prompt: identity + task + clawteam coordination guide
     prompt = None
     if task:
         from clawteam.spawn.prompt import build_agent_prompt
 
-        leader_name = TeamManager.get_leader_name(_team) or "leader"
         prompt = build_agent_prompt(
             agent_name=_name,
             agent_id=_id,
@@ -3211,6 +3213,7 @@ def spawn_agent(
         cwd=cwd,
         skip_permissions=skip_permissions,
         system_prompt=system_prompt,
+        is_leader=is_leader,
         keepalive=keepalive,
     )
 

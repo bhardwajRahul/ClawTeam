@@ -26,15 +26,13 @@ class TestValidateIdentifier:
     def test_valid_identifiers(self, value):
         assert validate_identifier(value) == value
 
-    def test_dots_only_allowed(self):
-        assert validate_identifier("..") == ".."
-        assert validate_identifier(".") == "."
-
     @pytest.mark.parametrize(
         "value",
         [
             "",
             " ",
+            ".",
+            "..",
             "../etc",
             "foo/bar",
             "foo\\bar",
